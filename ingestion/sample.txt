@@ -1,0 +1,31 @@
+Neural Search Engine – Test Document
+
+This is a sample text file created to test the ingestion pipeline
+of a Neural Search Engine system.
+
+The goal of this document is to verify the following aspects:
+1. TXT file loading
+2. UTF-8 text reading
+3. Metadata extraction
+4. Text chunking and overlap handling
+5. Embedding generation and storage in a vector database
+
+Neural search systems use embeddings instead of keyword matching.
+These embeddings capture the semantic meaning of text and are stored
+inside a vector database such as Qdrant.
+
+When a user asks a question, the query is converted into an embedding.
+The system then performs a similarity search to retrieve the most
+relevant document chunks based on semantic meaning.
+
+This test document is specifically used to evaluate whether
+the neural search engine can correctly retrieve relevant information
+from a small dataset using semantic search techniques.
+
+The document helps validate that user questions such as:
+"What does the test document verify?"
+or
+"Explain the ingestion pipeline test document"
+can retrieve meaningful answers from the stored content.
+
+End of document.
