@@ -152,4 +152,55 @@ router.post("/", upload.single("file"), async (req: Request, res: Response) => {
   }
 });
 
+/* ============================
+   GET /api/upload/documents
+   ============================ */
+router.get("/documents", (_req: Request, res: Response) => {
+  try {
+    const files = fs.readdirSync(UPLOAD_DIR);
+
+    const documents = files.map((file) => {
+      const parts = file.split("-");
+      const fileName = parts.slice(1).join("-");
+
+      return {
+        doc_id: parts[0],
+        file_name: fileName,
+      };
+    });
+
+    return res.status(200).json(documents);
+  } catch (err) {
+    console.error("[LIST DOCUMENTS ERROR]", err);
+    return res.status(500).json({ error: "Failed to list documents" });
+  }
+});
+
+/* ============================
+   GET /api/upload/documents/:doc_id/download
+   ============================ */
+router.get(
+  "/documents/:doc_id/download",
+  (req: Request, res: Response) => {
+    try {
+      const { doc_id } = req.params;
+
+      const files = fs.readdirSync(UPLOAD_DIR);
+      const file = files.find((f) => f.startsWith(`${doc_id}-`));
+
+      if (!file) {
+        return res.status(404).json({ error: "File not found" });
+      }
+
+      const filePath = path.join(UPLOAD_DIR, file);
+      const originalName = file.split("-").slice(1).join("-");
+
+      return res.download(filePath, originalName);
+    } catch (err) {
+      console.error("[DOWNLOAD ERROR]", err);
+      return res.status(500).json({ error: "Failed to download file" });
+    }
+  }
+);
+
 export default router;

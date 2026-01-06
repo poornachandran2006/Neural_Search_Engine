@@ -297,6 +297,14 @@ export default function UploadPage() {
           + New Chat
         </button>
 
+        {/* ✅ ADDED: Link to Documents page */}
+        <a
+          href="/documents"
+          className="block w-full mb-4 px-3 py-2 text-center bg-[#1f1f1f] rounded hover:bg-[#2a2a2a]"
+        >
+          View Uploaded Documents
+        </a>
+
         {chats.map((chat) => (
           <button
             key={chat.id}
