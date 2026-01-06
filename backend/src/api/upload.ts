@@ -105,9 +105,8 @@ router.post("/", upload.single("file"), async (req: Request, res: Response) => {
     if (inProgressUploads.has(fileHash)) {
       fs.unlinkSync(filePath);
 
-      return res.json({
-        status: "already_exists",
-        message: "File already uploaded (ingestion in progress)",
+      return res.status(409).json({
+        error: "File already uploaded (ingestion in progress)",
         doc_id: inProgressUploads.get(fileHash),
       });
     }
@@ -130,9 +129,8 @@ router.post("/", upload.single("file"), async (req: Request, res: Response) => {
       const existingDocId = search.points[0].payload?.doc_id;
       fs.unlinkSync(filePath);
 
-      return res.json({
-        status: "already_exists",
-        message: "File already uploaded",
+      return res.status(409).json({
+        error: "File already uploaded",
         doc_id: existingDocId,
       });
     }
@@ -144,15 +142,9 @@ router.post("/", upload.single("file"), async (req: Request, res: Response) => {
     // 5️⃣ Start ingestion
     triggerIngestion(filePath, docId, fileHash);
 
-    return res.json({
-      status: "uploaded",
+    return res.status(200).json({
       message: "File uploaded successfully. Ingestion started.",
       doc_id: docId,
-      file: {
-        originalName: req.file.originalname,
-        storedName: req.file.filename,
-        size: req.file.size,
-      },
     });
   } catch (err) {
     console.error("[UPLOAD ERROR]", err);
