@@ -153,8 +153,12 @@ export default function UploadPage() {
       );
 
       res.status === 409
-        ? setUploadError(`Document "${file.name}" already exists.`)
-        : setUploadMessage(`Document "${file.name}" uploaded successfully.`);
+        ? setUploadError(
+            `Document "${file.name}" is already uploaded`
+          )
+        : setUploadMessage(
+            `Document "${file.name}" has been uploaded successfully`
+          );
 
       setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -213,24 +217,6 @@ export default function UploadPage() {
             role: "assistant",
             content:
               "No documents are uploaded in this chat." + previous,
-          },
-        ],
-      }));
-      return;
-    }
-
-    if (activeChat.documents.length > 1 && isVagueDocQuery) {
-      updateActiveChat((chat) => ({
-        ...chat,
-        messages: [
-          ...chat.messages,
-          {
-            role: "assistant",
-            content:
-              "Multiple documents detected. Please specify:\n\n" +
-              activeChat.documents
-                .map((d) => `• ${d.fileName}`)
-                .join("\n"),
           },
         ],
       }));
@@ -297,7 +283,6 @@ export default function UploadPage() {
           + New Chat
         </button>
 
-        {/* ✅ ADDED: Link to Documents page */}
         <a
           href="/documents"
           className="block w-full mb-4 px-3 py-2 text-center bg-[#1f1f1f] rounded hover:bg-[#2a2a2a]"
@@ -352,6 +337,16 @@ export default function UploadPage() {
                 Upload
               </button>
             </div>
+
+            {/* ✅ ADDED: Upload status messages */}
+            {uploadMessage && (
+              <p className="text-green-400 text-sm">
+                {uploadMessage}
+              </p>
+            )}
+            {uploadError && (
+              <p className="text-red-400 text-sm">{uploadError}</p>
+            )}
 
             <input
               value={question}
