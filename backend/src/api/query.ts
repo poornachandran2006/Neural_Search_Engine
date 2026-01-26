@@ -6,6 +6,12 @@ import { ENV } from "../config/env";
 
 const router = Router();
 
+/* ================= NORMALIZATION ================= */
+
+function normalizeQuery(input: string): string {
+  return input.replace(/\s+/g, " ").trim();
+}
+
 /**
  * POST /api/query
  */
@@ -26,23 +32,46 @@ router.post("/query", async (req: Request, res: Response) => {
     }
 
     // -----------------------------
-    // Basic validations
+    // Normalize & validate query
     // -----------------------------
-    if (!query || typeof query !== "string") {
+    if (typeof query !== "string") {
       return res.status(400).json({
         error: "Query text is required",
       });
     }
 
+    const normalizedQuery = normalizeQuery(query);
+
+    if (normalizedQuery.length === 0) {
+      return res.status(400).json({
+        error: "Query text cannot be empty",
+      });
+    }
+
+    // -----------------------------
+    // Backend ambiguity enforcement
+    // -----------------------------
+// if (
+//   scope === "all_files" &&
+//   /^(summarize|summary|explain|describe|details?|overview|content|about|what is|tell me)/i.test(
+//     normalizedQuery
+//   )
+// ) {
+//   return res.status(400).json({
+//     error:
+//       "Ambiguous query. Please switch to current_file mode and select a document.",
+//   });
+// }
+
+    // -----------------------------
+    // Scope validation
+    // -----------------------------
     if (scope !== "current_file" && scope !== "all_files") {
       return res.status(400).json({
         error: "Invalid scope. Must be 'current_file' or 'all_files'",
       });
     }
 
-    // -----------------------------
-    // Step 20.2: Guardrails
-    // -----------------------------
     if (scope === "current_file") {
       if (!doc_id || typeof doc_id !== "string" || doc_id.trim().length === 0) {
         return res.status(400).json({
@@ -51,28 +80,37 @@ router.post("/query", async (req: Request, res: Response) => {
       }
     }
 
+    // -----------------------------
     // Clamp topK safely
+    // -----------------------------
     if (typeof topK !== "number" || isNaN(topK)) {
       topK = ENV.DEFAULT_TOP_K;
     }
     topK = Math.max(1, Math.min(topK, ENV.MAX_CONTEXT_CHUNKS));
 
     // -----------------------------
-    // Scope-based filters
+    // Scope-safe filters (backend authoritative)
     // -----------------------------
-    let finalFilters = { ...filters };
+    let finalFilters: Record<string, any> = {};
 
-    if (scope === "current_file") {
-      finalFilters = {
-        ...finalFilters,
-        doc_id: doc_id,
-      };
+    if (filters && typeof filters === "object") {
+      finalFilters = { ...filters };
     }
 
-    // 1️⃣ Generate query embedding
-    const embedding = await generateEmbedding(query);
+    if (scope === "current_file") {
+      finalFilters.doc_id = doc_id;
+    } else {
+      delete finalFilters.doc_id;
+    }
 
-    // 2️⃣ Vector search (scope-aware)
+    console.log(
+  `[QUERY] scope=${scope} doc_id=${doc_id ?? "N/A"} q="${normalizedQuery}"`
+);
+
+    // 1️⃣ Generate embedding
+    const embedding = await generateEmbedding(normalizedQuery);
+
+    // 2️⃣ Vector search
     const searchResults = await vectorSearch(
       embedding,
       topK,
@@ -81,7 +119,25 @@ router.post("/query", async (req: Request, res: Response) => {
 
     if (!searchResults || searchResults.length === 0) {
       return res.json({
-        query,
+        query: normalizedQuery,
+        scope,
+        answer: "The uploaded documents do not contain this information.",
+        sources: [],
+      });
+    }
+
+    // -----------------------------
+    // Minimum retrieval safety
+    // -----------------------------
+    const MIN_SCORE = ENV.MIN_RETRIEVAL_SCORE ?? 0.15;
+
+    const safeResults = searchResults.filter(
+      (r: any) => typeof r.score === "number" && r.score >= MIN_SCORE
+    );
+
+    if (safeResults.length === 0) {
+      return res.json({
+        query: normalizedQuery,
         scope,
         answer: "The uploaded documents do not contain this information.",
         sources: [],
@@ -89,7 +145,7 @@ router.post("/query", async (req: Request, res: Response) => {
     }
 
     // 3️⃣ Order chunks by document position
-    const orderedChunks = searchResults
+    const orderedChunks = safeResults
       .sort((a: any, b: any) => {
         const aIdx = a.payload?.chunk_index ?? Number.MAX_SAFE_INTEGER;
         const bIdx = b.payload?.chunk_index ?? Number.MAX_SAFE_INTEGER;
@@ -104,10 +160,44 @@ router.post("/query", async (req: Request, res: Response) => {
       score: item.score,
     }));
 
-    // 4️⃣ Generate answer using RAG
-    let answer = await generateLLMAnswer(query, ragChunks);
+    if (ragChunks.length === 0) {
+  return res.json({
+    query: normalizedQuery,
+    scope,
+    answer:
+      "No relevant content was found in the uploaded documents.",
+    sources: [],
+  });
+}
 
-    // 🔧 Deterministic fallback (resume name)
+    // -----------------------------
+    // Verify doc_id exists (current_file)
+    // -----------------------------
+    if (scope === "current_file") {
+      const hasMatchingDoc = ragChunks.some(
+        (c) => c.doc_id === doc_id
+      );
+
+      if (!hasMatchingDoc) {
+        return res.status(400).json({
+          error: "Invalid document selection. Document not found.",
+        });
+      }
+    }
+
+    // 4️⃣ Generate answer
+    let answer = await generateLLMAnswer(normalizedQuery, ragChunks);
+if (!answer || answer.trim().length === 0) {
+  return res.json({
+    query: normalizedQuery,
+    scope,
+    answer:
+      "The uploaded documents do not contain this information.",
+    sources: [],
+  });
+}
+
+    // 🔧 Deterministic fallback
     if (
       !answer ||
       answer.toLowerCase().includes("do not contain") ||
@@ -140,7 +230,7 @@ router.post("/query", async (req: Request, res: Response) => {
 
     if (!answer || answer.trim().length === 0) {
       return res.json({
-        query,
+        query: normalizedQuery,
         scope,
         answer: "The uploaded documents do not contain this information.",
         sources: [],
@@ -165,15 +255,29 @@ router.post("/query", async (req: Request, res: Response) => {
 
     const sources = Array.from(sourcesMap.values());
 
+    // -----------------------------
+    // Document-aware answer prefix
+    // -----------------------------
+    if (sources.length > 0) {
+      const documentLabels = sources
+        .map((s) => s.source_file || s.doc_id)
+        .filter((v): v is string => typeof v === "string");
+
+      if (documentLabels.length > 0) {
+        const uniqueDocs = Array.from(new Set(documentLabels));
+        answer = `Answering from: ${uniqueDocs.join(", ")}\n\n${answer}`;
+      }
+    }
+
     const response: any = {
-      query,
+      query: normalizedQuery,
       scope,
       answer,
       sources,
     };
 
-    // 6️⃣ Debug info
-    if (debug) {
+    // 6️⃣ Debug info (safe)
+    if (debug && ENV.NODE_ENV !== "production") {
       response.debug = {
         retrieval: {
           scope,

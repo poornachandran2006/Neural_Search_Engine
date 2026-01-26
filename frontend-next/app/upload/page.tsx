@@ -22,15 +22,55 @@ type ChatSession = {
   title: string;
   messages: ChatMessage[];
   documents: ChatDocument[];
+  currentDocId: string | null;
   createdAt: number;
 };
+
+/* ================= NORMALIZATION ================= */
+
+function normalizeQuery(input: string): string {
+  return input.replace(/\s+/g, " ").trim();
+}
+
+function isAmbiguousQuery(input: string): boolean {
+  const q = input.toLowerCase();
+
+  const documentActions = [
+    "summarize",
+    "summary",
+    "explain",
+    "describe",
+    "details",
+    "detail",
+    "overview",
+    "content",
+    "about",
+    "what is",
+    "tell me",
+  ];
+
+  const globalIndicators = [
+    "all",
+    "documents",
+    "files",
+    "uploaded",
+    "compare",
+    "list",
+    "across",
+    "multiple",
+  ];
+
+  const hasDocumentAction = documentActions.some((w) => q.includes(w));
+  const hasGlobalIntent = globalIndicators.some((w) => q.includes(w));
+
+  return hasDocumentAction && !hasGlobalIntent;
+}
 
 /* ================= COMPONENT ================= */
 
 export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [uploadMessage, setUploadMessage] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
   const [chats, setChats] = useState<ChatSession[]>([]);
@@ -40,26 +80,33 @@ export default function UploadPage() {
   const [asking, setAsking] = useState(false);
   const [hydrated, setHydrated] = useState(false);
 
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [queryMode, setQueryMode] = useState<"current" | "all">("current");
+  const [docDropdownOpen, setDocDropdownOpen] = useState(false);
+  const [docSearch, setDocSearch] = useState("");
 
-  /* ================= RESTORE + MIGRATE ================= */
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  /* ================= RESTORE ================= */
 
   useEffect(() => {
     const savedChats = localStorage.getItem("chats");
     const savedActiveChatId = localStorage.getItem("activeChatId");
 
     if (savedChats) {
-      const parsed = JSON.parse(savedChats);
+      const parsed: ChatSession[] = JSON.parse(savedChats);
 
-      const migrated: ChatSession[] = parsed.map((chat: any) => ({
-        id: chat.id,
-        title: chat.title || "New chat",
-        messages: Array.isArray(chat.messages) ? chat.messages : [],
-        documents: Array.isArray(chat.documents) ? chat.documents : [],
-        createdAt: chat.createdAt || Date.now(),
-      }));
+      const fixed = parsed.map((chat) => {
+        if (chat.documents.length > 0 && !chat.currentDocId) {
+          return {
+            ...chat,
+            currentDocId: chat.documents[chat.documents.length - 1].docId,
+          };
+        }
+        return chat;
+      });
 
-      setChats(migrated);
+      setChats(fixed);
     }
 
     if (savedActiveChatId) setActiveChatId(savedActiveChatId);
@@ -69,9 +116,7 @@ export default function UploadPage() {
   useEffect(() => {
     if (!hydrated) return;
     localStorage.setItem("chats", JSON.stringify(chats));
-    if (activeChatId) {
-      localStorage.setItem("activeChatId", activeChatId);
-    }
+    if (activeChatId) localStorage.setItem("activeChatId", activeChatId);
   }, [chats, activeChatId, hydrated]);
 
   /* ================= HELPERS ================= */
@@ -79,34 +124,61 @@ export default function UploadPage() {
   const activeChat = chats.find((c) => c.id === activeChatId);
   const messages = activeChat?.messages ?? [];
 
-  const allUploadedDocuments = Array.from(
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const allUploadedDocuments: ChatDocument[] = Array.from(
     new Map(
-      chats.flatMap((c) => c.documents).map((d) => [d.docId, d])
-    ).values()
+      chats.flatMap((chat) => chat.documents).map((doc) => [doc.docId, doc]),
+    ).values(),
   );
 
   function createNewChatAndActivate(): string {
     const id = crypto.randomUUID();
-    const newChat: ChatSession = {
-      id,
-      title: "New chat",
-      messages: [],
-      documents: [],
-      createdAt: Date.now(),
-    };
-
-    setChats((prev) => [newChat, ...prev]);
+    setChats((prev) => [
+      {
+        id,
+        title: "New chat",
+        messages: [],
+        documents: [],
+        currentDocId: null,
+        createdAt: Date.now(),
+      },
+      ...prev,
+    ]);
     setActiveChatId(id);
+    //setQueryMode("current");
     return id;
   }
 
-  function updateActiveChat(
-    updater: (chat: ChatSession) => ChatSession
-  ) {
+  function updateActiveChat(updater: (chat: ChatSession) => ChatSession) {
     if (!activeChatId) return;
     setChats((prev) =>
-      prev.map((c) => (c.id === activeChatId ? updater(c) : c))
+      prev.map((c) => (c.id === activeChatId ? updater(c) : c)),
     );
+  }
+
+  function selectCurrentDocument(doc: ChatDocument) {
+    updateActiveChat((chat) => ({
+      ...chat,
+      currentDocId: doc.docId,
+    }));
+    setQueryMode("current");
+    setDocDropdownOpen(false);
+  }
+
+  /* ================= RESET ================= */
+
+  function handleResetEverything() {
+    localStorage.removeItem("chats");
+    localStorage.removeItem("activeChatId");
+    setChats([]);
+    setActiveChatId(null);
+    setQuestion("");
+    setFile(null);
+    setQueryMode("current");
+    if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   /* ================= UPLOAD ================= */
@@ -117,7 +189,6 @@ export default function UploadPage() {
     const chatId = activeChatId ?? createNewChatAndActivate();
 
     setUploading(true);
-    setUploadMessage(null);
     setUploadError(null);
 
     try {
@@ -139,27 +210,19 @@ export default function UploadPage() {
           chat.id === chatId
             ? {
                 ...chat,
-                documents: chat.documents.some(
-                  (d) => d.docId === data.doc_id
-                )
+                documents: chat.documents.some((d) => d.docId === data.doc_id)
                   ? chat.documents
                   : [
                       ...chat.documents,
                       { docId: data.doc_id, fileName: file.name },
                     ],
+                currentDocId: data.doc_id,
               }
-            : chat
-        )
+            : chat,
+        ),
       );
 
-      res.status === 409
-        ? setUploadError(
-            `Document "${file.name}" is already uploaded`
-          )
-        : setUploadMessage(
-            `Document "${file.name}" has been uploaded successfully`
-          );
-
+      setQueryMode("current");
       setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (err: any) {
@@ -170,86 +233,97 @@ export default function UploadPage() {
   }
 
   /* ================= ASK ================= */
+console.log("handleAsk queryMode =", queryMode);
+async function handleAsk() {
+  if (!question.trim() || asking || !activeChat) return;
 
-  async function handleAsk() {
-    if (!question.trim() || asking || !activeChat) return;
+  const normalizedQuery = normalizeQuery(question);
 
-    const userMessage: ChatMessage = {
-      role: "user",
-      content: question,
-    };
+  /* ---------------------------------
+     1. Always render USER message first
+     --------------------------------- */
+  updateActiveChat((chat) => ({
+    ...chat,
+    title:
+      chat.messages.length === 0
+        ? normalizedQuery.slice(0, 40)
+        : chat.title,
+    messages: [...chat.messages, { role: "user", content: normalizedQuery }],
+  }));
 
+  setQuestion("");
+
+  /* ---------------------------------
+     2. All Documents requires at least one document
+     --------------------------------- */
+  if (queryMode === "all" && allUploadedDocuments.length === 0) {
     updateActiveChat((chat) => ({
       ...chat,
-      title:
-        chat.messages.length === 0
-          ? question.slice(0, 40)
-          : chat.title,
-      messages: [...chat.messages, userMessage],
+      messages: [
+        ...chat.messages,
+        {
+          role: "assistant",
+          content:
+            "All Documents mode requires at least one uploaded document. Please upload a file first.",
+        },
+      ],
     }));
+    return;
+  }
 
-    const isVagueDocQuery =
-      /describe|summarize|explain/i.test(question) &&
-      /pdf|document|file|paper/i.test(question);
+  /* ---------------------------------
+     3. Ambiguity check (UX-safe)
+     --------------------------------- */
+  if (queryMode === "all" && isAmbiguousQuery(normalizedQuery)) {
+    updateActiveChat((chat) => ({
+      ...chat,
+      messages: [
+        ...chat.messages,
+        {
+          role: "assistant",
+          content:
+            "This question refers to a specific document. Please switch to Current Document mode and select a document.",
+        },
+      ],
+    }));
+    return;
+  }
 
-    const mentionedDoc = allUploadedDocuments.find((d) =>
-      question.toLowerCase().includes(d.fileName.toLowerCase())
-    );
+  setAsking(true);
 
-    setQuestion("");
+  try {
+    /* ---------------------------------
+       4. Current Document mode
+       --------------------------------- */
+    if (queryMode === "current") {
+      const docId = activeChat.currentDocId;
 
-    if (
-      activeChat.documents.length === 0 &&
-      isVagueDocQuery &&
-      !mentionedDoc
-    ) {
-      const previous =
-        allUploadedDocuments.length > 0
-          ? "\n\nPreviously uploaded documents:\n" +
-            allUploadedDocuments.map((d) => `• ${d.fileName}`).join("\n")
-          : "";
+      if (!docId) {
+        updateActiveChat((chat) => ({
+          ...chat,
+          messages: [
+            ...chat.messages,
+            {
+              role: "assistant",
+              content:
+                "Current Document mode requires a document. Please upload or select one.",
+            },
+          ],
+        }));
+        return;
+      }
 
-      updateActiveChat((chat) => ({
-        ...chat,
-        messages: [
-          ...chat.messages,
-          {
-            role: "assistant",
-            content:
-              "No documents are uploaded in this chat." + previous,
-          },
-        ],
-      }));
-      return;
-    }
-
-    setAsking(true);
-    try {
       const res = await fetch(`${API_BASE_URL}/api/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          mentionedDoc
-            ? {
-                query: userMessage.content,
-                scope: "current_file",
-                doc_id: mentionedDoc.docId,
-              }
-            : activeChat.documents.length > 0
-            ? {
-                query: userMessage.content,
-                scope: "current_file",
-                doc_id: activeChat.documents[0].docId,
-              }
-            : {
-                query: userMessage.content,
-                scope: "all_files",
-              }
-        ),
+        body: JSON.stringify({
+          query: normalizedQuery,
+          scope: "current_file",
+          doc_id: docId,
+        }),
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
 
       updateActiveChat((chat) => ({
         ...chat,
@@ -258,105 +332,299 @@ export default function UploadPage() {
           { role: "assistant", content: data.answer },
         ],
       }));
-    } catch (err: any) {
-      updateActiveChat((chat) => ({
-        ...chat,
-        messages: [
-          ...chat.messages,
-          { role: "assistant", content: err.message },
-        ],
-      }));
-    } finally {
-      setAsking(false);
+
+      return;
     }
+
+    /* ---------------------------------
+       5. All Documents mode
+       --------------------------------- */
+    const res = await fetch(`${API_BASE_URL}/api/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: normalizedQuery,
+        scope: "all_files",
+      }),
+    });
+
+    const data = await res.json();
+
+    updateActiveChat((chat) => ({
+      ...chat,
+      messages: [
+        ...chat.messages,
+        { role: "assistant", content: data.answer },
+      ],
+    }));
+  } catch (err) {
+    updateActiveChat((chat) => ({
+      ...chat,
+      messages: [
+        ...chat.messages,
+        {
+          role: "assistant",
+          content:
+            "Something went wrong while processing your request. Please try again.",
+        },
+      ],
+    }));
+  } finally {
+    setAsking(false);
   }
+}
 
   /* ================= UI ================= */
 
   return (
-    <main className="min-h-screen flex bg-[#0f0f0f] text-white">
-      <aside className="w-64 border-r border-gray-800 bg-[#111] p-4">
-        <button
-          onClick={createNewChatAndActivate}
-          className="w-full mb-4 px-3 py-2 bg-white text-black rounded"
-        >
-          + New Chat
-        </button>
-
-        <a
-          href="/documents"
-          className="block w-full mb-4 px-3 py-2 text-center bg-[#1f1f1f] rounded hover:bg-[#2a2a2a]"
-        >
-          View Uploaded Documents
-        </a>
-
-        {chats.map((chat) => (
+    <main className="min-h-screen flex bg-gradient-to-br from-gray-900 via-black to-gray-900 text-gray-100">
+      {/* Sidebar */}
+      <aside className="w-72 border-r border-gray-800/50 bg-gradient-to-b from-gray-900/95 to-black/95 backdrop-blur-xl p-4 flex flex-col">
+        <div className="mb-6">
+          <h2 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent mb-4">
+            Neural Search
+          </h2>
+          
           <button
-            key={chat.id}
-            onClick={() => setActiveChatId(chat.id)}
-            className={`w-full text-left px-3 py-2 rounded ${
-              chat.id === activeChatId
-                ? "bg-[#1f1f1f]"
-                : "hover:bg-[#1a1a1a]"
-            }`}
+            onClick={createNewChatAndActivate}
+            className="w-full mb-2 px-4 py-3 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-lg font-medium transition-all duration-300 hover:shadow-lg hover:shadow-purple-500/30 hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-2"
           >
-            {chat.title}
+            <span className="text-lg">+</span>
+            New Chat
           </button>
-        ))}
+
+          <button
+            onClick={handleResetEverything}
+            className="w-full mb-3 px-4 py-2.5 bg-red-600/20 text-red-400 border border-red-500/30 rounded-lg font-medium transition-all duration-300 hover:bg-red-600/30 hover:border-red-500/50"
+          >
+            Reset Everything
+          </button>
+
+          <a
+            href="/documents"
+            className="block w-full px-4 py-2.5 text-center bg-gray-800/50 border border-gray-700/50 text-gray-300 rounded-lg font-medium transition-all duration-300 hover:bg-gray-800/80 hover:border-gray-600/50"
+          >
+            📄 View Documents
+          </a>
+        </div>
+
+        <div className="flex-1 overflow-y-auto space-y-1">
+          <h3 className="text-xs uppercase text-gray-500 font-semibold mb-2 px-2">Conversations</h3>
+          {chats.map((chat) => (
+            <button
+              key={chat.id}
+              onClick={() => setActiveChatId(chat.id)}
+              className={`w-full text-left px-3 py-2.5 rounded-lg font-medium transition-all duration-200 truncate ${
+                chat.id === activeChatId
+                  ? "bg-gradient-to-r from-blue-600/20 to-purple-600/20 border border-blue-500/30 text-white shadow-lg"
+                  : "text-gray-400 hover:bg-gray-800/50 hover:text-gray-200"
+              }`}
+            >
+              {chat.title}
+            </button>
+          ))}
+        </div>
       </aside>
 
-      <section className="flex-1 flex flex-col">
-        <div className="flex-1 overflow-y-auto px-6 py-10">
-          <div className="max-w-3xl mx-auto space-y-6">
-            {messages.map((msg, i) => (
-              <div
-                key={i}
-                className={`p-4 rounded ${
-                  msg.role === "user"
-                    ? "bg-[#1f1f1f]"
-                    : "bg-[#161616]"
-                }`}
-              >
-                {msg.content}
+      {/* Main Content */}
+      <section className="flex-1 flex flex-col relative">
+        {/* Background decoration */}
+        <div className="absolute inset-0 overflow-hidden pointer-events-none">
+          <div className="absolute w-96 h-96 bg-blue-500/5 rounded-full blur-3xl top-0 right-0"></div>
+          <div className="absolute w-96 h-96 bg-purple-500/5 rounded-full blur-3xl bottom-0 left-0"></div>
+        </div>
+
+        {/* Messages Area */}
+        <div className="flex-1 overflow-y-auto px-6 py-10 relative z-10">
+          <div className="max-w-4xl mx-auto space-y-4">
+            {messages.length === 0 ? (
+              <div className="flex items-center justify-center h-full min-h-[400px]">
+                <div className="text-center">
+                  <div className="text-6xl mb-4 opacity-20">💬</div>
+                  <p className="text-gray-500 text-lg">Start a conversation or upload a document</p>
+                </div>
               </div>
-            ))}
+            ) : (
+              messages.map((msg, i) => (
+                <div
+                  key={i}
+                  className={`group animate-fade-in p-5 rounded-xl backdrop-blur-sm transition-all duration-300 ${
+                    msg.role === "user"
+                      ? "bg-gradient-to-br from-blue-600/20 to-blue-700/10 border border-blue-500/20 ml-12"
+                      : "bg-gradient-to-br from-gray-800/50 to-gray-900/30 border border-gray-700/30 mr-12"
+                  }`}
+                  style={{ animationDelay: `${i * 50}ms` }}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
+                      msg.role === "user" 
+                        ? "bg-gradient-to-br from-blue-500 to-purple-500" 
+                        : "bg-gradient-to-br from-gray-700 to-gray-800"
+                    }`}>
+                      {msg.role === "user" ? "👤" : "🤖"}
+                    </div>
+                    <div className="flex-1 text-gray-200 leading-relaxed whitespace-pre-wrap">
+                      {msg.content}
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+            {asking && (
+              <div className="flex items-center gap-2 p-5 rounded-xl bg-gradient-to-br from-gray-800/50 to-gray-900/30 border border-gray-700/30 mr-12">
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-gray-700 to-gray-800 flex items-center justify-center">
+                  🤖
+                </div>
+                <div className="flex gap-1">
+                  <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce"></div>
+                  <div className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: "0.1s" }}></div>
+                  <div className="w-2 h-2 bg-pink-500 rounded-full animate-bounce" style={{ animationDelay: "0.2s" }}></div>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
           </div>
         </div>
 
-        <div className="border-t border-gray-800 bg-[#111] p-4">
-          <div className="max-w-3xl mx-auto flex flex-col gap-3">
+        {/* Input Area */}
+        <div className="border-t border-gray-800/50 bg-gradient-to-b from-gray-900/95 to-black/95 backdrop-blur-xl p-6 relative z-10">
+          <div className="max-w-4xl mx-auto space-y-4">
+            {/* Mode Selection */}
+            <div className="flex items-center gap-4 text-sm">
+              <div className="relative">
+                <button
+                  disabled={!activeChat || allUploadedDocuments.length === 0}
+                  onClick={() => {
+                    setDocDropdownOpen((v) => !v);
+                  }}
+                  className="px-4 py-2 bg-gray-800/60 border border-gray-700/50 rounded-lg text-gray-300 hover:bg-gray-800 hover:border-gray-600 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  <span className="text-xs">📄</span>
+                  <span className="max-w-[200px] truncate">
+                    {activeChat?.currentDocId
+                      ? allUploadedDocuments.find(
+                          (d) => d.docId === activeChat.currentDocId,
+                        )?.fileName
+                      : "Select Document"}
+                  </span>
+                </button>
+
+                {queryMode === "current" && docDropdownOpen && (
+                  <div className="absolute bottom-full mb-2 w-80 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl overflow-hidden animate-fade-in">
+                    <input
+                      type="text"
+                      placeholder="🔍 Search documents..."
+                      value={docSearch}
+                      onChange={(e) => setDocSearch(e.target.value)}
+                      className="w-full px-4 py-3 bg-gray-800/80 text-white border-b border-gray-700 outline-none focus:bg-gray-800 transition-colors"
+                    />
+
+                    <ul className="max-h-64 overflow-y-auto">
+                      {allUploadedDocuments
+                        .filter((doc) =>
+                          doc.fileName
+                            .toLowerCase()
+                            .includes(docSearch.toLowerCase()),
+                        )
+                        .map((doc) => (
+                          <li
+                            key={doc.docId}
+                            onClick={() => selectCurrentDocument(doc)}
+                            className={`px-4 py-3 cursor-pointer transition-colors ${
+                              activeChat?.currentDocId === doc.docId
+                                ? "bg-blue-600/20 text-blue-300 border-l-2 border-blue-500"
+                                : "hover:bg-gray-800/60 text-gray-300"
+                            }`}
+                          >
+                            <div className="truncate">{doc.fileName}</div>
+                          </li>
+                        ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+
+              <label className="flex items-center gap-2 px-4 py-2 bg-gray-800/60 border border-gray-700/50 rounded-lg cursor-pointer hover:bg-gray-800 hover:border-gray-600 transition-all duration-200">
+                <input
+                  type="radio"
+                  checked={queryMode === "all"}
+                  onChange={() => {
+                    setQueryMode("all");
+                    setDocDropdownOpen(false);
+                    console.log("Query mode set to ALL");
+                  }}
+                  className="accent-purple-600"
+                />
+                <span className="text-gray-300">All Documents</span>
+              </label>
+            </div>
+
+            {/* File Upload */}
             <div className="flex gap-3">
-              <input
-                ref={fileInputRef}
-                type="file"
-                onChange={(e) =>
-                  setFile(e.target.files?.[0] || null)
-                }
-              />
-              <button onClick={handleUpload} disabled={uploading}>
-                Upload
+              <label className="flex-1 px-4 py-3 bg-gray-800/60 border border-gray-700/50 rounded-lg cursor-pointer hover:bg-gray-800 hover:border-gray-600 transition-all duration-200 flex items-center gap-3">
+                <span className="text-gray-400">📎</span>
+                <span className="text-gray-400 text-sm truncate">
+                  {file ? file.name : "Choose file..."}
+                </span>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  onChange={(e) => setFile(e.target.files?.[0] || null)}
+                  className="hidden"
+                />
+              </label>
+              <button
+                onClick={handleUpload}
+                disabled={uploading || !file}
+                className="px-6 py-3 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg font-medium transition-all duration-300 hover:shadow-lg hover:shadow-green-500/30 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-none"
+              >
+                {uploading ? "Uploading..." : "Upload"}
               </button>
             </div>
 
-            {/* ✅ ADDED: Upload status messages */}
-            {uploadMessage && (
-              <p className="text-green-400 text-sm">
-                {uploadMessage}
-              </p>
-            )}
             {uploadError && (
-              <p className="text-red-400 text-sm">{uploadError}</p>
+              <div className="px-4 py-2 bg-red-600/20 border border-red-500/30 rounded-lg text-red-400 text-sm">
+                {uploadError}
+              </div>
             )}
 
-            <input
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleAsk()}
-              placeholder="Ask anything…"
-            />
+            {/* Question Input */}
+            <div className="flex gap-3">
+              <input
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleAsk()}
+                placeholder="Ask anything about your documents..."
+                className="flex-1 px-5 py-4 bg-gray-800/60 border border-gray-700/50 rounded-xl text-white placeholder-gray-500 outline-none focus:border-blue-500/50 focus:bg-gray-800 transition-all duration-200"
+              />
+              <button
+                onClick={handleAsk}
+                disabled={asking || !question.trim()}
+                className="px-6 py-4 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-xl font-medium transition-all duration-300 hover:shadow-lg hover:shadow-purple-500/30 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-none flex items-center gap-2"
+              >
+                {asking ? "Thinking..." : "Send"}
+                {!asking && <span className="text-lg">→</span>}
+              </button>
+            </div>
           </div>
         </div>
       </section>
+
+      <style jsx>{`
+        @keyframes fade-in {
+          from {
+            opacity: 0;
+            transform: translateY(10px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        .animate-fade-in {
+          animation: fade-in 0.3s ease-out forwards;
+        }
+      `}</style>
     </main>
   );
 }

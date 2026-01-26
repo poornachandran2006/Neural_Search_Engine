@@ -8,6 +8,8 @@ const qdrant = new QdrantClient({
 });
 
 const COLLECTION_NAME = "documents";
+const VECTOR_SIZE = 384; // ⚠️ must match your embedding size
+const DISTANCE = "Cosine";
 
 /**
  * Optional metadata filters for vector search
@@ -28,14 +30,16 @@ async function ensureQdrantReady() {
     );
 
     if (!exists) {
-      throw new Error(
-        `Qdrant collection '${COLLECTION_NAME}' does not exist`
-      );
+      await qdrant.createCollection(COLLECTION_NAME, {
+        vectors: {
+          size: VECTOR_SIZE,
+          distance: DISTANCE,
+        },
+      });
     }
-  } catch {
-    throw new Error(
-      "Qdrant is not reachable or not properly initialized"
-    );
+  } catch (err) {
+    console.error("Qdrant init failed:", err);
+    throw new Error("Qdrant is not reachable or not properly initialized");
   }
 }
 
@@ -100,39 +104,97 @@ export async function vectorSearch(
   // -----------------------------
   // 1. Semantic similarity search
   // -----------------------------
-  const semanticResults = await qdrant.search(COLLECTION_NAME, {
+// -----------------------------
+// 1. Balanced semantic search (per document)
+// -----------------------------
+
+let semanticResults: any[] = [];
+
+// Case A: ALL DOCUMENTS MODE (multiple doc_ids)
+if (filters?.doc_id && Array.isArray(filters.doc_id)) {
+  const perDocK = Math.max(1, Math.floor(topK / filters.doc_id.length));
+
+  for (const docId of filters.doc_id) {
+    const results = await qdrant.search(COLLECTION_NAME, {
+      vector: embedding,
+      limit: perDocK,
+      with_payload: true,
+      with_vector: false,
+      filter: {
+        must: [
+          {
+            key: "doc_id",
+            match: { value: docId },
+          },
+        ],
+      },
+    });
+
+    semanticResults.push(...results);
+  }
+}
+// Case B: SINGLE DOCUMENT MODE
+else {
+  semanticResults = await qdrant.search(COLLECTION_NAME, {
     vector: embedding,
     limit: topK,
     with_payload: true,
     with_vector: false,
     ...(baseFilter && { filter: baseFilter }),
   });
+}
 
-  // -----------------------------
-  // 2. Header chunk retrieval (chunk_index = 0)
-  // -----------------------------
-  const headerResults = await qdrant.scroll(COLLECTION_NAME, {
-    limit: 2,
+// -----------------------------
+// 2. Header chunk retrieval (ONE per document)
+// -----------------------------
+let headerPoints: any[] = [];
+
+if (filters?.doc_id && Array.isArray(filters.doc_id)) {
+  // All Documents mode → one header per document
+  for (const docId of filters.doc_id) {
+    const res = await qdrant.scroll(COLLECTION_NAME, {
+      limit: 1,
+      with_payload: true,
+      with_vector: false,
+      filter: {
+        must: [
+          { key: "doc_id", match: { value: docId } },
+          { key: "chunk_index", match: { value: 0 } },
+        ],
+      },
+    });
+
+    if (res.points && res.points.length > 0) {
+      headerPoints.push(res.points[0]);
+    }
+  }
+} else {
+  // Single document mode
+  const res = await qdrant.scroll(COLLECTION_NAME, {
+    limit: 1,
     with_payload: true,
     with_vector: false,
     filter: {
       must: [
         ...(mustConditions ?? []),
-        {
-          key: "chunk_index",
-          match: { value: 0 },
-        },
+        { key: "chunk_index", match: { value: 0 } },
       ],
     },
   });
 
-  // -----------------------------
-  // 3. Merge + deduplicate
-  // -----------------------------
-  const combined = [
-    ...semanticResults,
-    ...(headerResults.points ?? []),
-  ];
+  if (res.points && res.points.length > 0) {
+    headerPoints.push(res.points[0]);
+  }
+}
+
+// -----------------------------
+// 3. Merge + deduplicate
+// -----------------------------
+const combined = [
+  ...semanticResults,
+  ...headerPoints,
+];
+
 
   const uniqueMap = new Map<string, any>();
 
@@ -143,6 +205,14 @@ export async function vectorSearch(
   }
 
   const mergedResults = Array.from(uniqueMap.values());
+console.log(
+  "RAG CONTEXT DOC COUNTS:",
+  mergedResults.reduce((acc: any, p: any) => {
+    const d = p.payload?.doc_id ?? "unknown";
+    acc[d] = (acc[d] || 0) + 1;
+    return acc;
+  }, {})
+);
 
   // -----------------------------
   // 4. Score threshold filtering

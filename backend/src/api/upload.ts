@@ -10,15 +10,37 @@ import { QdrantClient } from "@qdrant/js-client-rest";
 const router = Router();
 
 /* ============================
-   Qdrant client
+   Qdrant configuration
    ============================ */
 const qdrant = new QdrantClient({
   url: "http://localhost:6333",
 });
 
+const COLLECTION_NAME = "documents";
+const VECTOR_SIZE = 384;
+const DISTANCE = "Cosine";
+
+/* ============================
+   Ensure collection exists
+   ============================ */
+async function ensureCollectionExists() {
+  const collections = await qdrant.getCollections();
+  const exists = collections.collections.some(
+    (c) => c.name === COLLECTION_NAME
+  );
+
+  if (!exists) {
+    await qdrant.createCollection(COLLECTION_NAME, {
+      vectors: {
+        size: VECTOR_SIZE,
+        distance: DISTANCE,
+      },
+    });
+  }
+}
+
 /* =====================================================
    In-progress upload tracker
-   file_hash → doc_id
    ===================================================== */
 const inProgressUploads = new Map<string, string>();
 
@@ -61,26 +83,22 @@ function triggerIngestion(
   docId: string,
   fileHash: string
 ) {
-  const python = spawn(
-    "python",
-    [
-      "../ingestion/src/main.py",
-      "--file",
-      filePath,
-      "--doc_id",
-      docId,
-      "--file_hash",
-      fileHash,
-    ],
-    {
-      cwd: process.cwd(),
-      stdio: "inherit",
-    }
-  );
+const python = spawn(
+  "python",
+  [
+    path.join(process.cwd(), "..", "ingestion", "src", "main.py"),
+    "--file",
+    filePath,
+    "--doc_id",
+    docId,
+    "--file_hash",
+    fileHash,
+  ],
+  {
+    stdio: "inherit",
+  }
+);
 
-  python.on("close", () => {
-    inProgressUploads.delete(fileHash);
-  });
 
   python.on("error", () => {
     inProgressUploads.delete(fileHash);
@@ -96,6 +114,9 @@ router.post("/", upload.single("file"), async (req: Request, res: Response) => {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
+    // 🔒 Ensure Qdrant is ready
+    await ensureCollectionExists();
+
     const filePath = req.file.path;
 
     // 1️⃣ Compute file hash
@@ -104,15 +125,15 @@ router.post("/", upload.single("file"), async (req: Request, res: Response) => {
     // 2️⃣ Short-term dedup (ingestion in progress)
     if (inProgressUploads.has(fileHash)) {
       fs.unlinkSync(filePath);
-
       return res.status(409).json({
-        error: "File already uploaded (ingestion in progress)",
+        status: "duplicate",
+        message: "File already uploaded (ingestion in progress)",
         doc_id: inProgressUploads.get(fileHash),
       });
     }
 
     // 3️⃣ Long-term dedup (Qdrant)
-    const search = await qdrant.scroll("documents", {
+    const search = await qdrant.scroll(COLLECTION_NAME, {
       with_payload: true,
       limit: 1,
       filter: {
@@ -130,7 +151,8 @@ router.post("/", upload.single("file"), async (req: Request, res: Response) => {
       fs.unlinkSync(filePath);
 
       return res.status(409).json({
-        error: "File already uploaded",
+        status: "duplicate",
+        message: "File already uploaded",
         doc_id: existingDocId,
       });
     }
@@ -143,7 +165,8 @@ router.post("/", upload.single("file"), async (req: Request, res: Response) => {
     triggerIngestion(filePath, docId, fileHash);
 
     return res.status(200).json({
-      message: "File uploaded successfully. Ingestion started.",
+      status: "uploaded",
+      message: `File uploaded successfully`,
       doc_id: docId,
     });
   } catch (err) {
@@ -151,56 +174,5 @@ router.post("/", upload.single("file"), async (req: Request, res: Response) => {
     return res.status(500).json({ error: "Upload failed" });
   }
 });
-
-/* ============================
-   GET /api/upload/documents
-   ============================ */
-router.get("/documents", (_req: Request, res: Response) => {
-  try {
-    const files = fs.readdirSync(UPLOAD_DIR);
-
-    const documents = files.map((file) => {
-      const parts = file.split("-");
-      const fileName = parts.slice(1).join("-");
-
-      return {
-        doc_id: parts[0],
-        file_name: fileName,
-      };
-    });
-
-    return res.status(200).json(documents);
-  } catch (err) {
-    console.error("[LIST DOCUMENTS ERROR]", err);
-    return res.status(500).json({ error: "Failed to list documents" });
-  }
-});
-
-/* ============================
-   GET /api/upload/documents/:doc_id/download
-   ============================ */
-router.get(
-  "/documents/:doc_id/download",
-  (req: Request, res: Response) => {
-    try {
-      const { doc_id } = req.params;
-
-      const files = fs.readdirSync(UPLOAD_DIR);
-      const file = files.find((f) => f.startsWith(`${doc_id}-`));
-
-      if (!file) {
-        return res.status(404).json({ error: "File not found" });
-      }
-
-      const filePath = path.join(UPLOAD_DIR, file);
-      const originalName = file.split("-").slice(1).join("-");
-
-      return res.download(filePath, originalName);
-    } catch (err) {
-      console.error("[DOWNLOAD ERROR]", err);
-      return res.status(500).json({ error: "Failed to download file" });
-    }
-  }
-);
 
 export default router;

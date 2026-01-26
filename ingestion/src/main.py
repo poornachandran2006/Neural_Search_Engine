@@ -76,6 +76,8 @@ doc = loader.load(file_path)
 clean_text = text_parser.parse(doc["text"])
 chunks = chunker.chunk(clean_text)
 
+print(f"[DEBUG] Total chunks created: {len(chunks)}")
+
 if not chunks:
     raise ValueError("No chunks created from document text")
 

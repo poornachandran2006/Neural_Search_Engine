@@ -37,9 +37,17 @@ export const ENV = {
   // Retrieval
   // ----------------------------
   DEFAULT_TOP_K: parseInt(getEnv("DEFAULT_TOP_K", "5"), 10),
+
+  // Existing threshold (kept for backward compatibility)
   DEFAULT_SCORE_THRESHOLD: parseFloat(
     getEnv("DEFAULT_SCORE_THRESHOLD", "0.15")
   ),
+
+  // ✅ NEW — used by backend safety checks (Step 3)
+  MIN_RETRIEVAL_SCORE: parseFloat(
+    getEnv("MIN_RETRIEVAL_SCORE", "0.15")
+  ),
+
   MAX_CONTEXT_CHUNKS: parseInt(
     getEnv("MAX_CONTEXT_CHUNKS", "8"),
     10

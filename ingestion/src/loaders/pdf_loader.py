@@ -4,14 +4,13 @@ import re
 
 class PdfLoader:
     """
-    Robust PDF loader for resumes and documents.
-    Preserves headers (like names) and normalizes text
-    for better chunking and retrieval.
+    Text-only PDF loader.
+    Supports PDFs with extractable text.
+    OCR is intentionally NOT enabled.
     """
 
     def load(self, file_path: str) -> dict:
         reader = PdfReader(file_path)
-
         pages_text = []
 
         for i, page in enumerate(reader.pages):
@@ -23,9 +22,8 @@ class PdfLoader:
             # Normalize whitespace
             text = re.sub(r"\s+", " ", raw_text).strip()
 
-            # Explicit page boundary (important for retrieval)
+            # Explicit page boundary
             page_block = f"\n\n--- PAGE {i + 1} ---\n{text}"
-
             pages_text.append(page_block)
 
         full_text = "\n".join(pages_text).strip()
