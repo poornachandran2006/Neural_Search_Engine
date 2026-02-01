@@ -26,30 +26,30 @@ This system is intentionally conservative: it answers **only when information is
 
 ```mermaid
 flowchart LR
-    U[User] -->|Query| FE[Next.js Frontend]
+    U[User] --> FE[Next.js Frontend]
 
-    FE -->|REST API| BE[Node.js Backend]
+    FE --> BE[Node.js Backend]
 
-    BE -->|Intent Detection| ID[Intent Router]
+    BE --> ID[Intent Detection]
 
-    ID -->|Metadata Query| MH[Metadata Handler]
-    MH -->|Document List| FE
+    ID --> MH[Metadata Handler]
+    MH --> FE
 
-    ID -->|Content Query| EMB[Embedding Service]
+    ID --> EMB[Embedding Service]
+    EMB --> VS[Qdrant Vector Database]
 
-    EMB -->|Vector| VS[Qdrant Vector DB]
+    VS --> RET[Retriever]
 
-    VS -->|Chunks| RET[Retriever]
+    RET --> LLM1[LLM Single Document]
+    RET --> MAP[Map Phase Per Document]
 
-    RET -->|Single Doc| LLM1[LLM Answer Generator]
-    RET -->|Multiple Docs| MAP[Map Phase<br/>Per-Document LLM]
-
-    MAP --> REDUCE[Reduce Phase<br/>Answer Merger]
+    MAP --> REDUCE[Reduce Phase Merge Answers]
 
     LLM1 --> RESP[Final Answer]
     REDUCE --> RESP
 
     RESP --> FE
+```
 
 
 🔍 Query Modes
@@ -175,3 +175,4 @@ This system demonstrates real-world RAG engineering:
 • Controlled LLM usage
 • Safe retrieval pipelines
 • End-to-end system design
+
