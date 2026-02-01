@@ -1,50 +1,79 @@
-# Neural Search Engine – Multi-Document RAG System
+# Neural Search Engine  
+### Production-Ready Multi-Document RAG with Map-Reduce Architecture
 
-Neural Search Engine is a full-stack, production-grade Retrieval-Augmented Generation (RAG) system designed to demonstrate real-world document intelligence, multi-document reasoning, and safe LLM integration. The system supports strict document scoping, deterministic intent detection, and a Map-Reduce RAG pipeline for accurate cross-document answers.
+Neural Search Engine is a full-stack, enterprise-grade Retrieval-Augmented Generation (RAG) system designed for accurate, safe, and explainable document intelligence. It supports strict document scoping, deterministic intent detection, and multi-document reasoning using a hard-enforced Map-Reduce RAG pipeline.
 
-This project is intentionally built to behave conservatively: it answers only when information is explicitly present in the documents and returns a clear “not found” response otherwise.
+This system is intentionally conservative: it answers **only when information is explicitly present in documents** and returns a clear fallback otherwise.
 
 ---
 
-## Key Capabilities
+## 🚀 Core Features
 
 • Semantic document search using dense embeddings  
 • Vector storage and retrieval via Qdrant  
 • Current Document and All Documents query modes  
-• Map-Reduce RAG for multi-document reasoning  
-• Deterministic intent routing (metadata vs content queries)  
-• Hallucination-resistant response logic  
+• Hard-enforced Map-Reduce RAG for multi-document queries  
+• Deterministic intent detection (metadata vs content)  
+• Hallucination-resistant answer generation  
 • File deduplication and ingestion locking  
-• ChatGPT-style frontend with persistent chat history  
+• ChatGPT-style UI with persistent chat history  
 
 ---
 
-## Architecture Overview
+## 🧠 System Architecture
 
-Frontend (Next.js)  
-→ Backend API (Node.js + Express)  
-→ Embedding Service  
-→ Vector Search (Qdrant)  
-→ RAG Pipeline (Map → Reduce → Answer)  
+### High-Level Architecture Diagram
 
-The backend enforces strict scoping rules:
-• Current Document mode queries only one document
-• All Documents mode balances retrieval across all documents
-• Map-Reduce is automatically applied when multiple documents are involved
+```mermaid
+flowchart LR
+    U[User] -->|Query| FE[Next.js Frontend]
 
----
+    FE -->|REST API| BE[Node.js Backend]
 
-## Project Structure
+    BE -->|Intent Detection| ID[Intent Router]
+
+    ID -->|Metadata Query| MH[Metadata Handler]
+    MH -->|Document List| FE
+
+    ID -->|Content Query| EMB[Embedding Service]
+
+    EMB -->|Vector| VS[Qdrant Vector DB]
+
+    VS -->|Chunks| RET[Retriever]
+
+    RET -->|Single Doc| LLM1[LLM Answer Generator]
+    RET -->|Multiple Docs| MAP[Map Phase<br/>Per-Document LLM]
+
+    MAP --> REDUCE[Reduce Phase<br/>Answer Merger]
+
+    LLM1 --> RESP[Final Answer]
+    REDUCE --> RESP
+
+    RESP --> FE
+
+
+🔍 Query Modes
+1️⃣ Current Document Mode
+
+• Query is scoped to one selected document
+• Prevents cross-document leakage
+• Requires explicit document selection
+• Uses single-pass RAG
+
+2️⃣ All Documents Mode
+
+• Searches across all uploaded documents
+• Ensures balanced retrieval per document
+• Automatically triggers Map-Reduce RAG when multiple documents exist
 
 neural_search_engine/
-├── backend/ # API, RAG logic, intent detection
-├── frontend-next/ # Primary Next.js frontend
-├── ingestion/ # Python ingestion pipeline
-├── infra/ # Infrastructure and Docker configs
-├── docs/ # Documentation assets
+├── backend/            # API, RAG logic, intent routing
+├── frontend-next/      # Primary Next.js frontend
+├── ingestion/          # Python ingestion pipeline
+├── infra/              # Docker & infrastructure configs
+├── docs/               # Documentation assets
 ├── README.md
 └── .gitignore
-
 ---
 
 ## Tech Stack
