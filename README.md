@@ -72,6 +72,7 @@ neural_search_engine/
 ├── docs/               # Documentation assets
 ├── README.md
 └── .gitignore
+
 ---
 
 ## Tech Stack
@@ -159,5 +160,6 @@ This system demonstrates real-world RAG engineering:
 • Controlled LLM usage
 • Safe retrieval pipelines
 • End-to-end system design
+
 
 
