@@ -65,14 +65,16 @@ flowchart LR
 
 ## Project Structure
 
+```text
 neural_search_engine/
-├── backend/ # API, RAG logic, intent detection
-├── frontend-next/ # Primary Next.js frontend
-├── ingestion/ # Python ingestion pipeline
-├── infra/ # Infrastructure and Docker configs
-├── docs/ # Documentation assets
+├── backend/            # API, RAG logic, intent detection
+├── frontend-next/      # Primary Next.js frontend
+├── ingestion/          # Python ingestion pipeline
+├── infra/              # Infrastructure and Docker configs
+├── docs/               # Documentation assets
 ├── README.md
 └── .gitignore
+```
 
 ---
 
@@ -161,6 +163,7 @@ This system demonstrates real-world RAG engineering:
 • Controlled LLM usage
 • Safe retrieval pipelines
 • End-to-end system design
+
 
 
 
