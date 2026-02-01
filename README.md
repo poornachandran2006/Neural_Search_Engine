@@ -51,20 +51,18 @@ flowchart LR
     RESP --> FE
 ```
 
+## Query Modes
 
-🔍 Query Modes
-1️⃣ Current Document Mode
+### Current Document Mode
+• Query is scoped to a single selected document  
+• Prevents cross-document leakage  
+• Requires an explicitly selected document  
 
-• Query is scoped to one selected document
-• Prevents cross-document leakage
-• Requires explicit document selection
-• Uses single-pass RAG
+### All Documents Mode
+• Searches across all uploaded documents  
+• Ensures balanced retrieval per document  
+• Uses Map-Reduce RAG when multiple documents exist  
 
-2️⃣ All Documents Mode
-
-• Searches across all uploaded documents
-• Ensures balanced retrieval per document
-• Automatically triggers Map-Reduce RAG when multiple documents exist
 
 neural_search_engine/
 ├── backend/            # API, RAG logic, intent routing
@@ -94,20 +92,6 @@ Ingestion
 • PDF/Text loaders  
 • Chunking with overlap  
 • Vector upserts to Qdrant  
-
----
-
-## Query Modes
-
-### Current Document Mode
-• Query is scoped to a single selected document  
-• Prevents cross-document leakage  
-• Requires an explicitly selected document  
-
-### All Documents Mode
-• Searches across all uploaded documents  
-• Ensures balanced retrieval per document  
-• Uses Map-Reduce RAG when multiple documents exist  
 
 ---
 
@@ -175,4 +159,5 @@ This system demonstrates real-world RAG engineering:
 • Controlled LLM usage
 • Safe retrieval pipelines
 • End-to-end system design
+
 
