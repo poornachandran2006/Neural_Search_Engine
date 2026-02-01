@@ -3,6 +3,9 @@
 import { useEffect, useState } from "react";
 import { FileText, Download, Search, Loader2 } from "lucide-react";
 
+const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5000";
+
 type DocumentItem = {
   docId: string;
   fileName: string;
@@ -18,25 +21,37 @@ export default function DocumentsPage() {
   const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem("chats");
-      if (!raw) {
+    // Fetch documents from backend metadata API instead of localStorage
+    // This ensures consistency with the metadata query results
+    const fetchDocuments = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/query`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: 'list all documents' })
+        });
+
+        const data = await response.json();
+
+        if (data.intent === 'metadata' && data.documents) {
+          // Map backend response to frontend format
+          const mappedDocs = data.documents.map((doc: any) => ({
+            docId: doc.doc_id,
+            fileName: doc.source_file || doc.doc_id
+          }));
+          setDocuments(mappedDocs);
+        } else {
+          setDocuments([]);
+        }
+      } catch (error) {
+        console.error('Failed to fetch documents:', error);
         setDocuments([]);
-        return;
+      } finally {
+        setLoading(false);
       }
+    };
 
-      const chats: ChatSession[] = JSON.parse(raw);
-      const allDocs = chats.flatMap((chat) => chat.documents);
-      const unique = Array.from(
-        new Map(allDocs.map((d) => [d.docId, d])).values()
-      );
-
-      setDocuments(unique);
-    } catch {
-      setDocuments([]);
-    } finally {
-      setLoading(false);
-    }
+    fetchDocuments();
   }, []);
 
   function downloadDocument(doc: DocumentItem) {
@@ -63,13 +78,22 @@ export default function DocumentsPage() {
       <div className="max-w-6xl mx-auto px-6 py-12">
         {/* Header Section */}
         <div className="mb-12 animate-fade-in">
-          <div className="flex items-center gap-3 mb-3">
-            <div className="p-3 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl shadow-lg shadow-blue-500/20">
-              <FileText className="w-8 h-8" />
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl shadow-lg shadow-blue-500/20">
+                <FileText className="w-8 h-8" />
+              </div>
+              <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+                Document Library
+              </h1>
             </div>
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
-              Document Library
-            </h1>
+            <button
+              onClick={() => window.location.reload()}
+              className="p-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition-colors"
+              title="Refresh List"
+            >
+              <Loader2 className="w-5 h-5" />
+            </button>
           </div>
           <p className="text-slate-400 text-lg ml-16">
             Manage and access all your uploaded documents
@@ -117,12 +141,12 @@ export default function DocumentsPage() {
               >
                 {/* Gradient overlay on hover */}
                 <div className="absolute inset-0 bg-gradient-to-br from-blue-500/0 to-purple-500/0 group-hover:from-blue-500/5 group-hover:to-purple-500/5 rounded-xl transition-all duration-300" />
-                
+
                 <div className="relative flex items-start gap-4">
                   <div className="p-3 bg-slate-800 rounded-lg group-hover:bg-gradient-to-br group-hover:from-blue-500 group-hover:to-purple-600 transition-all duration-300">
                     <FileText className="w-6 h-6 text-slate-400 group-hover:text-white transition-colors" />
                   </div>
-                  
+
                   <div className="flex-1 min-w-0">
                     <h3 className="text-white font-medium mb-1 truncate group-hover:text-blue-300 transition-colors">
                       {doc.fileName}

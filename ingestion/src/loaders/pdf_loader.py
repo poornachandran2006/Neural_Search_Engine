@@ -19,8 +19,11 @@ class PdfLoader:
             if not raw_text:
                 continue
 
-            # Normalize whitespace
-            text = re.sub(r"\s+", " ", raw_text).strip()
+            # Preserve structure: Replace excessive spaces but KEEP newlines
+            # 1. Replace multiple spaces/tabs with single space
+            # 2. Limit newlines to max 2 (paragraph breaks)
+            text = re.sub(r'[ \t]+', ' ', raw_text)
+            text = re.sub(r'\n\s*\n', '\n\n', text).strip()
 
             # Explicit page boundary
             page_block = f"\n\n--- PAGE {i + 1} ---\n{text}"

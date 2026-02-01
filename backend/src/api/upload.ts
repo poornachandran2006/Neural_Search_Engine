@@ -5,20 +5,9 @@ import fs from "fs";
 import crypto from "crypto";
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
-import { QdrantClient } from "@qdrant/js-client-rest";
+import { qdrant, COLLECTION_NAME, VECTOR_SIZE, DISTANCE } from "../db/qdrant";
 
 const router = Router();
-
-/* ============================
-   Qdrant configuration
-   ============================ */
-const qdrant = new QdrantClient({
-  url: "http://localhost:6333",
-});
-
-const COLLECTION_NAME = "documents";
-const VECTOR_SIZE = 384;
-const DISTANCE = "Cosine";
 
 /* ============================
    Ensure collection exists
@@ -83,24 +72,46 @@ function triggerIngestion(
   docId: string,
   fileHash: string
 ) {
-const python = spawn(
-  "python",
-  [
-    path.join(process.cwd(), "..", "ingestion", "src", "main.py"),
-    "--file",
-    filePath,
-    "--doc_id",
-    docId,
-    "--file_hash",
-    fileHash,
-  ],
-  {
-    stdio: "inherit",
-  }
-);
+  const python = spawn(
+    "python",
+    [
+      path.join(process.cwd(), "..", "ingestion", "src", "main.py"),
+      "--file",
+      filePath,
+      "--doc_id",
+      docId,
+      "--file_hash",
+      fileHash,
+    ],
+    {
+      stdio: "inherit",
+    }
+  );
 
+  // ✅ Handle successful completion
+  python.on("exit", (code) => {
+    inProgressUploads.delete(fileHash);
 
-  python.on("error", () => {
+    if (code === 0) {
+      console.log(`✅ Ingestion complete: ${docId}`);
+      // Clean up uploaded file after successful ingestion
+      try {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          console.log(`🗑️  Cleaned up file: ${filePath}`);
+        }
+      } catch (err) {
+        console.error(`⚠️  Failed to delete file ${filePath}:`, err);
+      }
+    } else {
+      console.error(`❌ Ingestion failed: ${docId} (exit code: ${code})`);
+      // Keep file for debugging on failure
+    }
+  });
+
+  // ✅ Handle process errors
+  python.on("error", (err) => {
+    console.error(`❌ Ingestion process error for ${docId}:`, err.message);
     inProgressUploads.delete(fileHash);
   });
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useSupressHydrationWarning } from "../hooks/useSupressHydrationWarning";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5000";
@@ -35,36 +36,20 @@ function normalizeQuery(input: string): string {
 function isAmbiguousQuery(input: string): boolean {
   const q = input.toLowerCase();
 
-  const documentActions = [
-    "summarize",
-    "summary",
-    "explain",
-    "describe",
-    "details",
-    "detail",
-    "overview",
-    "content",
-    "about",
-    "what is",
-    "tell me",
+  // ONLY block when the user EXPLICITLY refers to a specific document
+  const explicitDocumentReferences = [
+    "this document",
+    "this file",
+    "current document",
+    "this pdf",
+    "this doc",
+    "summarize this",
+    "summarise this",
   ];
 
-  const globalIndicators = [
-    "all",
-    "documents",
-    "files",
-    "uploaded",
-    "compare",
-    "list",
-    "across",
-    "multiple",
-  ];
-
-  const hasDocumentAction = documentActions.some((w) => q.includes(w));
-  const hasGlobalIntent = globalIndicators.some((w) => q.includes(w));
-
-  return hasDocumentAction && !hasGlobalIntent;
+  return explicitDocumentReferences.some((phrase) => q.includes(phrase));
 }
+
 
 /* ================= COMPONENT ================= */
 
@@ -72,6 +57,7 @@ export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
 
   const [chats, setChats] = useState<ChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
@@ -86,6 +72,9 @@ export default function UploadPage() {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  // Suppress browser extension hydration warnings
+  useSupressHydrationWarning();
 
   /* ================= RESTORE ================= */
 
@@ -109,7 +98,15 @@ export default function UploadPage() {
       setChats(fixed);
     }
 
-    if (savedActiveChatId) setActiveChatId(savedActiveChatId);
+    if (savedActiveChatId) {
+      setActiveChatId(savedActiveChatId);
+    } else if (savedChats) {
+      // Auto-select the last chat if exists to prevent disabled UI
+      const parsedIds: ChatSession[] = JSON.parse(savedChats);
+      if (parsedIds.length > 0) {
+        setActiveChatId(parsedIds[0].id);
+      }
+    }
     setHydrated(true);
   }, []);
 
@@ -128,11 +125,29 @@ export default function UploadPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Merge chat-based docs with server-based docs to ensure we see EVERYTHING
+  // Server docs take precedence for existence, but we use chat docs for local state coherence if needed.
+  // Actually, simplest is to use a map to deduplicate by docId.
+  const [serverDocuments, setServerDocuments] = useState<ChatDocument[]>([]);
+
   const allUploadedDocuments: ChatDocument[] = Array.from(
-    new Map(
-      chats.flatMap((chat) => chat.documents).map((doc) => [doc.docId, doc]),
-    ).values(),
+    new Map([
+      ...serverDocuments.map((doc) => [doc.docId, doc] as const),
+      ...chats.flatMap((chat) => chat.documents).map((doc) => [doc.docId, doc] as const)
+    ]).values()
   );
+
+  // Sync with backend on mount
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/documents`)
+      .then(res => res.json())
+      .then(data => {
+        if (data && Array.isArray(data.documents)) {
+          setServerDocuments(data.documents);
+        }
+      })
+      .catch(err => console.error("Failed to fetch documents:", err));
+  }, []);
 
   function createNewChatAndActivate(): string {
     const id = crypto.randomUUID();
@@ -159,11 +174,24 @@ export default function UploadPage() {
     );
   }
 
-  function selectCurrentDocument(doc: ChatDocument) {
-    updateActiveChat((chat) => ({
-      ...chat,
-      currentDocId: doc.docId,
-    }));
+  function selectCurrentDocument(doc: ChatDocument, specificChatId?: string) {
+    const targetId = specificChatId || activeChatId;
+    if (!targetId) return;
+
+    setChats((prev) =>
+      prev.map((chat) =>
+        chat.id === targetId
+          ? {
+            ...chat,
+            currentDocId: doc.docId,
+          }
+          : chat,
+      ),
+    );
+
+    if (specificChatId) {
+      setActiveChatId(specificChatId);
+    }
     setQueryMode("current");
     setDocDropdownOpen(false);
   }
@@ -190,10 +218,19 @@ export default function UploadPage() {
 
     setUploading(true);
     setUploadError(null);
+    setUploadSuccess(null);
 
     try {
       const formData = new FormData();
       formData.append("file", file);
+
+      // Client-side file type validation
+      const allowedExtensions = ['.pdf', '.txt', '.doc', '.docx', '.md'];
+      const fileExtension = file.name.toLowerCase().substring(file.name.lastIndexOf('.'));
+
+      if (!allowedExtensions.includes(fileExtension)) {
+        throw new Error("Unsupported file format.");
+      }
 
       const res = await fetch(`${API_BASE_URL}/api/upload`, {
         method: "POST",
@@ -201,23 +238,35 @@ export default function UploadPage() {
       });
 
       const data = await res.json();
-      if (!res.ok && res.status !== 409) {
-        throw new Error(data.error || "Upload failed");
+
+      // Handle 409 Duplicate specifically (treated as error per requirements)
+      if (res.status === 409 || data.status === "duplicate") {
+        throw new Error("The file already exists.");
+      }
+
+      // Validate response has explicit success status
+      if (!res.ok) {
+        throw new Error(data.error || data.message || "Upload failed");
+      }
+
+      // Only accept 'uploaded' as valid success states
+      if (data.status !== "uploaded") {
+        throw new Error(data.error || "Unsupported file format.");
       }
 
       setChats((prev) =>
         prev.map((chat) =>
           chat.id === chatId
             ? {
-                ...chat,
-                documents: chat.documents.some((d) => d.docId === data.doc_id)
-                  ? chat.documents
-                  : [
-                      ...chat.documents,
-                      { docId: data.doc_id, fileName: file.name },
-                    ],
-                currentDocId: data.doc_id,
-              }
+              ...chat,
+              documents: chat.documents.some((d) => d.docId === data.doc_id)
+                ? chat.documents
+                : [
+                  ...chat.documents,
+                  { docId: data.doc_id, fileName: file.name },
+                ],
+              currentDocId: data.doc_id,
+            }
             : chat,
         ),
       );
@@ -225,154 +274,176 @@ export default function UploadPage() {
       setQueryMode("current");
       setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
+
+      setUploadSuccess("File uploaded successfully.");
+
     } catch (err: any) {
       setUploadError(err.message);
+      // Clear file input on error so filename doesn't persist
+      setFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
     } finally {
       setUploading(false);
     }
   }
 
   /* ================= ASK ================= */
-console.log("handleAsk queryMode =", queryMode);
-async function handleAsk() {
-  if (!question.trim() || asking || !activeChat) return;
 
-  const normalizedQuery = normalizeQuery(question);
+  async function handleAsk() {
+    if (!question.trim() || asking || !activeChat) return;
 
-  /* ---------------------------------
-     1. Always render USER message first
-     --------------------------------- */
-  updateActiveChat((chat) => ({
-    ...chat,
-    title:
-      chat.messages.length === 0
-        ? normalizedQuery.slice(0, 40)
-        : chat.title,
-    messages: [...chat.messages, { role: "user", content: normalizedQuery }],
-  }));
+    const normalizedQuery = normalizeQuery(question);
 
-  setQuestion("");
-
-  /* ---------------------------------
-     2. All Documents requires at least one document
-     --------------------------------- */
-  if (queryMode === "all" && allUploadedDocuments.length === 0) {
-    updateActiveChat((chat) => ({
-      ...chat,
-      messages: [
-        ...chat.messages,
-        {
-          role: "assistant",
-          content:
-            "All Documents mode requires at least one uploaded document. Please upload a file first.",
-        },
-      ],
-    }));
-    return;
-  }
-
-  /* ---------------------------------
-     3. Ambiguity check (UX-safe)
-     --------------------------------- */
-  if (queryMode === "all" && isAmbiguousQuery(normalizedQuery)) {
-    updateActiveChat((chat) => ({
-      ...chat,
-      messages: [
-        ...chat.messages,
-        {
-          role: "assistant",
-          content:
-            "This question refers to a specific document. Please switch to Current Document mode and select a document.",
-        },
-      ],
-    }));
-    return;
-  }
-
-  setAsking(true);
-
-  try {
     /* ---------------------------------
-       4. Current Document mode
+       1. Always render USER message first
        --------------------------------- */
-    if (queryMode === "current") {
-      const docId = activeChat.currentDocId;
+    updateActiveChat((chat) => ({
+      ...chat,
+      title:
+        chat.messages.length === 0
+          ? normalizedQuery.slice(0, 40)
+          : chat.title,
+      messages: [...chat.messages, { role: "user", content: normalizedQuery }],
+    }));
 
-      if (!docId) {
+    setQuestion("");
+
+    /* ---------------------------------
+       2. All Documents requires at least one document
+       --------------------------------- */
+    if (queryMode === "all" && allUploadedDocuments.length === 0) {
+      updateActiveChat((chat) => ({
+        ...chat,
+        messages: [
+          ...chat.messages,
+          {
+            role: "assistant",
+            content:
+              "All Documents mode requires at least one uploaded document. Please upload a file first.",
+          },
+        ],
+      }));
+      return;
+    }
+
+    setAsking(true);
+
+    try {
+      /* ---------------------------------
+         4. Current Document mode
+         --------------------------------- */
+      if (queryMode === "current") {
+        const docId = activeChat.currentDocId;
+
+        if (!docId) {
+          updateActiveChat((chat) => ({
+            ...chat,
+            messages: [
+              ...chat.messages,
+              {
+                role: "assistant",
+                content:
+                  "Current Document mode requires a document. Please upload or select one.",
+              },
+            ],
+          }));
+          return;
+        }
+
+        const res = await fetch(`${API_BASE_URL}/api/query`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query: normalizedQuery,
+            scope: "current_file",
+            doc_id: docId,
+          }),
+        });
+
+        const data = await res.json();
+
+        // Handle metadata query response
+        let assistantMessage: string;
+        if (data.intent === 'metadata') {
+          // Format metadata response
+          if (data.count === 0) {
+            assistantMessage = "No documents have been uploaded yet.";
+          } else {
+            const docList = data.documents
+              .map((doc: any, idx: number) => `${idx + 1}. ${doc.source_file || doc.doc_id}`)
+              .join('\n');
+            assistantMessage = `Found ${data.count} document${data.count > 1 ? 's' : ''}:\n\n${docList}`;
+          }
+        } else {
+          // Normal RAG response
+          assistantMessage = data.answer;
+        }
+
         updateActiveChat((chat) => ({
           ...chat,
           messages: [
             ...chat.messages,
-            {
-              role: "assistant",
-              content:
-                "Current Document mode requires a document. Please upload or select one.",
-            },
+            { role: "assistant", content: assistantMessage },
           ],
         }));
+
         return;
       }
 
+      /* ---------------------------------
+         5. All Documents mode
+         --------------------------------- */
       const res = await fetch(`${API_BASE_URL}/api/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query: normalizedQuery,
-          scope: "current_file",
-          doc_id: docId,
+          scope: "all_files",
         }),
       });
 
       const data = await res.json();
 
+      // Handle metadata query response
+      let assistantMessage: string;
+      if (data.intent === 'metadata') {
+        // Format metadata response
+        if (data.count === 0) {
+          assistantMessage = "No documents have been uploaded yet.";
+        } else {
+          const docList = data.documents
+            .map((doc: any, idx: number) => `${idx + 1}. ${doc.source_file || doc.doc_id}`)
+            .join('\n');
+          assistantMessage = `Found ${data.count} document${data.count > 1 ? 's' : ''}:\n\n${docList}`;
+        }
+      } else {
+        // Normal RAG response
+        assistantMessage = data.answer;
+      }
+
       updateActiveChat((chat) => ({
         ...chat,
         messages: [
           ...chat.messages,
-          { role: "assistant", content: data.answer },
+          { role: "assistant", content: assistantMessage },
         ],
       }));
-
-      return;
+    } catch (err) {
+      updateActiveChat((chat) => ({
+        ...chat,
+        messages: [
+          ...chat.messages,
+          {
+            role: "assistant",
+            content:
+              "Something went wrong while processing your request. Please try again.",
+          },
+        ],
+      }));
+    } finally {
+      setAsking(false);
     }
-
-    /* ---------------------------------
-       5. All Documents mode
-       --------------------------------- */
-    const res = await fetch(`${API_BASE_URL}/api/query`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query: normalizedQuery,
-        scope: "all_files",
-      }),
-    });
-
-    const data = await res.json();
-
-    updateActiveChat((chat) => ({
-      ...chat,
-      messages: [
-        ...chat.messages,
-        { role: "assistant", content: data.answer },
-      ],
-    }));
-  } catch (err) {
-    updateActiveChat((chat) => ({
-      ...chat,
-      messages: [
-        ...chat.messages,
-        {
-          role: "assistant",
-          content:
-            "Something went wrong while processing your request. Please try again.",
-        },
-      ],
-    }));
-  } finally {
-    setAsking(false);
   }
-}
 
   /* ================= UI ================= */
 
@@ -384,7 +455,7 @@ async function handleAsk() {
           <h2 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent mb-4">
             Neural Search
           </h2>
-          
+
           <button
             onClick={createNewChatAndActivate}
             className="w-full mb-2 px-4 py-3 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-lg font-medium transition-all duration-300 hover:shadow-lg hover:shadow-purple-500/30 hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-2"
@@ -414,11 +485,10 @@ async function handleAsk() {
             <button
               key={chat.id}
               onClick={() => setActiveChatId(chat.id)}
-              className={`w-full text-left px-3 py-2.5 rounded-lg font-medium transition-all duration-200 truncate ${
-                chat.id === activeChatId
-                  ? "bg-gradient-to-r from-blue-600/20 to-purple-600/20 border border-blue-500/30 text-white shadow-lg"
-                  : "text-gray-400 hover:bg-gray-800/50 hover:text-gray-200"
-              }`}
+              className={`w-full text-left px-3 py-2.5 rounded-lg font-medium transition-all duration-200 truncate ${chat.id === activeChatId
+                ? "bg-gradient-to-r from-blue-600/20 to-purple-600/20 border border-blue-500/30 text-white shadow-lg"
+                : "text-gray-400 hover:bg-gray-800/50 hover:text-gray-200"
+                }`}
             >
               {chat.title}
             </button>
@@ -448,19 +518,17 @@ async function handleAsk() {
               messages.map((msg, i) => (
                 <div
                   key={i}
-                  className={`group animate-fade-in p-5 rounded-xl backdrop-blur-sm transition-all duration-300 ${
-                    msg.role === "user"
-                      ? "bg-gradient-to-br from-blue-600/20 to-blue-700/10 border border-blue-500/20 ml-12"
-                      : "bg-gradient-to-br from-gray-800/50 to-gray-900/30 border border-gray-700/30 mr-12"
-                  }`}
+                  className={`group animate-fade-in p-5 rounded-xl backdrop-blur-sm transition-all duration-300 ${msg.role === "user"
+                    ? "bg-gradient-to-br from-blue-600/20 to-blue-700/10 border border-blue-500/20 ml-12"
+                    : "bg-gradient-to-br from-gray-800/50 to-gray-900/30 border border-gray-700/30 mr-12"
+                    }`}
                   style={{ animationDelay: `${i * 50}ms` }}
                 >
                   <div className="flex items-start gap-3">
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
-                      msg.role === "user" 
-                        ? "bg-gradient-to-br from-blue-500 to-purple-500" 
-                        : "bg-gradient-to-br from-gray-700 to-gray-800"
-                    }`}>
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${msg.role === "user"
+                      ? "bg-gradient-to-br from-blue-500 to-purple-500"
+                      : "bg-gradient-to-br from-gray-700 to-gray-800"
+                      }`}>
                       {msg.role === "user" ? "👤" : "🤖"}
                     </div>
                     <div className="flex-1 text-gray-200 leading-relaxed whitespace-pre-wrap">
@@ -490,36 +558,73 @@ async function handleAsk() {
         <div className="border-t border-gray-800/50 bg-gradient-to-b from-gray-900/95 to-black/95 backdrop-blur-xl p-6 relative z-10">
           <div className="max-w-4xl mx-auto space-y-4">
             {/* Mode Selection */}
-            <div className="flex items-center gap-4 text-sm">
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center gap-4 text-sm">
+                <label className={`flex items-center gap-2 px-4 py-2 border rounded-lg cursor-pointer transition-all duration-200 ${queryMode === "current" ? "bg-blue-600/20 border-blue-500/50 text-white" : "bg-gray-800/60 border-gray-700/50 text-gray-400 hover:bg-gray-800"}`}>
+                  <input
+                    type="radio"
+                    checked={queryMode === "current"}
+                    onChange={() => setQueryMode("current")}
+                    className="accent-blue-500"
+                  />
+                  <span>Current Document</span>
+                </label>
+
+                <label className={`flex items-center gap-2 px-4 py-2 border rounded-lg cursor-pointer transition-all duration-200 ${queryMode === "all" ? "bg-purple-600/20 border-purple-500/50 text-white" : "bg-gray-800/60 border-gray-700/50 text-gray-400 hover:bg-gray-800"}`}>
+                  <input
+                    type="radio"
+                    checked={queryMode === "all"}
+                    onChange={() => {
+                      setQueryMode("all");
+                      setDocDropdownOpen(false);
+                    }}
+                    className="accent-purple-500"
+                  />
+                  <span>All Documents</span>
+                </label>
+              </div>
+
               <div className="relative">
                 <button
-                  disabled={!activeChat || allUploadedDocuments.length === 0}
+                  disabled={queryMode === "all"}
                   onClick={() => {
+                    if (queryMode === "all") return;
                     setDocDropdownOpen((v) => !v);
                   }}
-                  className="px-4 py-2 bg-gray-800/60 border border-gray-700/50 rounded-lg text-gray-300 hover:bg-gray-800 hover:border-gray-600 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                  className="w-full px-4 py-3 bg-gray-800/60 border border-gray-700/50 rounded-lg text-gray-300 hover:bg-gray-800 hover:border-gray-600 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-between group"
                 >
-                  <span className="text-xs">📄</span>
-                  <span className="max-w-[200px] truncate">
-                    {activeChat?.currentDocId
-                      ? allUploadedDocuments.find(
-                          (d) => d.docId === activeChat.currentDocId,
-                        )?.fileName
-                      : "Select Document"}
-                  </span>
+                  <div className="flex items-center gap-2 overflow-hidden">
+                    <span className="text-lg">📄</span>
+                    <span className="truncate">
+                      {queryMode === "all"
+                        ? "Searching across all documents"
+                        : (activeChat?.currentDocId
+                          ? allUploadedDocuments.find(
+                            (d) => d.docId === activeChat.currentDocId,
+                          )?.fileName
+                          : "Select a document...")}
+                    </span>
+                  </div>
+                  {queryMode === "current" && (
+                    <span className="text-xs text-gray-500 group-hover:text-gray-300 transition-colors">▼</span>
+                  )}
                 </button>
 
-                {queryMode === "current" && docDropdownOpen && (
-                  <div className="absolute bottom-full mb-2 w-80 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl overflow-hidden animate-fade-in">
+                {docDropdownOpen && queryMode === "current" && (
+                  <div className="absolute top-full mt-2 left-0 w-full bg-gray-900 border border-gray-700 rounded-xl shadow-2xl overflow-hidden animate-fade-in z-50">
                     <input
                       type="text"
                       placeholder="🔍 Search documents..."
                       value={docSearch}
                       onChange={(e) => setDocSearch(e.target.value)}
                       className="w-full px-4 py-3 bg-gray-800/80 text-white border-b border-gray-700 outline-none focus:bg-gray-800 transition-colors"
+                      autoFocus
                     />
 
                     <ul className="max-h-64 overflow-y-auto">
+                      {allUploadedDocuments.length === 0 && (
+                        <li className="px-4 py-4 text-center text-gray-500 text-sm">No documents uploaded yet</li>
+                      )}
                       {allUploadedDocuments
                         .filter((doc) =>
                           doc.fileName
@@ -529,34 +634,32 @@ async function handleAsk() {
                         .map((doc) => (
                           <li
                             key={doc.docId}
-                            onClick={() => selectCurrentDocument(doc)}
-                            className={`px-4 py-3 cursor-pointer transition-colors ${
-                              activeChat?.currentDocId === doc.docId
-                                ? "bg-blue-600/20 text-blue-300 border-l-2 border-blue-500"
-                                : "hover:bg-gray-800/60 text-gray-300"
-                            }`}
+                            onClick={() => {
+                              // Ensure active chat exists before selecting
+                              if (!activeChatId) {
+                                const newId = createNewChatAndActivate();
+                                // We need to wait for state update or pass newId. 
+                                // But helper functions rely on state. 
+                                // Simplified: Just update `activeChatId` state is enough for next render, 
+                                // but here we need to update the chat object immediately.
+                                // Let's modify selectCurrentDocument to handle this.
+                                selectCurrentDocument(doc, newId);
+                              } else {
+                                selectCurrentDocument(doc);
+                              }
+                            }}
+                            className={`px-4 py-3 cursor-pointer transition-colors border-l-2 ${activeChat?.currentDocId === doc.docId
+                              ? "bg-blue-600/20 text-blue-300 border-blue-500"
+                              : "border-transparent hover:bg-gray-800/60 text-gray-300 hover:border-gray-600"
+                              }`}
                           >
-                            <div className="truncate">{doc.fileName}</div>
+                            <div className="truncate text-sm">{doc.fileName}</div>
                           </li>
                         ))}
                     </ul>
                   </div>
                 )}
               </div>
-
-              <label className="flex items-center gap-2 px-4 py-2 bg-gray-800/60 border border-gray-700/50 rounded-lg cursor-pointer hover:bg-gray-800 hover:border-gray-600 transition-all duration-200">
-                <input
-                  type="radio"
-                  checked={queryMode === "all"}
-                  onChange={() => {
-                    setQueryMode("all");
-                    setDocDropdownOpen(false);
-                    console.log("Query mode set to ALL");
-                  }}
-                  className="accent-purple-600"
-                />
-                <span className="text-gray-300">All Documents</span>
-              </label>
             </div>
 
             {/* File Upload */}
@@ -569,7 +672,11 @@ async function handleAsk() {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  onChange={(e) => setFile(e.target.files?.[0] || null)}
+                  onChange={(e) => {
+                    setFile(e.target.files?.[0] || null);
+                    setUploadError(null);
+                    setUploadSuccess(null);
+                  }}
                   className="hidden"
                 />
               </label>
@@ -588,6 +695,12 @@ async function handleAsk() {
               </div>
             )}
 
+            {uploadSuccess && (
+              <div className="px-4 py-2 bg-green-600/20 border border-green-500/30 rounded-lg text-green-400 text-sm">
+                {uploadSuccess}
+              </div>
+            )}
+
             {/* Question Input */}
             <div className="flex gap-3">
               <input
@@ -599,13 +712,25 @@ async function handleAsk() {
               />
               <button
                 onClick={handleAsk}
-                disabled={asking || !question.trim()}
+                disabled={
+                  asking ||
+                  !question.trim() ||
+                  (queryMode === "current" && !activeChat?.currentDocId)
+                }
                 className="px-6 py-4 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-xl font-medium transition-all duration-300 hover:shadow-lg hover:shadow-purple-500/30 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-none flex items-center gap-2"
               >
                 {asking ? "Thinking..." : "Send"}
                 {!asking && <span className="text-lg">→</span>}
               </button>
             </div>
+
+            {/* Inline Error for Missing Document in Current Mode */}
+            {queryMode === "current" && !activeChat?.currentDocId && (
+              <div className="text-red-400 text-xs mt-1 text-center">
+                Please select a document before asking a question.
+              </div>
+            )}
+
           </div>
         </div>
       </section>
@@ -625,6 +750,6 @@ async function handleAsk() {
           animation: fade-in 0.3s ease-out forwards;
         }
       `}</style>
-    </main>
+    </main >
   );
 }

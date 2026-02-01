@@ -4,6 +4,8 @@ import { generateEmbedding } from "./services/embedding.service";
 import { vectorSearch } from "./services/vector-search.service";
 import queryRouter from "./api/query";
 import uploadRouter from "./api/upload";
+import documentsRouter from "./api/documents";
+import { ENV } from "./config/env";
 
 const app = express();
 
@@ -12,7 +14,7 @@ const app = express();
 // --------------------------------------
 app.use(
   cors({
-    origin: "http://localhost:3000",
+    origin: ENV.CORS_ORIGIN,
   })
 );
 
@@ -37,6 +39,11 @@ app.use("/api", queryRouter);
 // Upload API
 // --------------------------------------
 app.use("/api/upload", uploadRouter);
+
+// --------------------------------------
+// Documents API (List all files)
+// --------------------------------------
+app.use("/api/documents", documentsRouter);
 
 // --------------------------------------
 // POST /api/search  (Legacy Neural Search)

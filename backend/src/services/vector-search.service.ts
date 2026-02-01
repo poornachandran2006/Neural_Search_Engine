@@ -1,15 +1,4 @@
-import { QdrantClient } from "@qdrant/js-client-rest";
-
-/**
- * Qdrant client initialization
- */
-const qdrant = new QdrantClient({
-  url: "http://localhost:6333",
-});
-
-const COLLECTION_NAME = "documents";
-const VECTOR_SIZE = 384; // ⚠️ must match your embedding size
-const DISTANCE = "Cosine";
+import { qdrant, COLLECTION_NAME, VECTOR_SIZE, DISTANCE } from "../db/qdrant";
 
 /**
  * Optional metadata filters for vector search
@@ -102,98 +91,44 @@ export async function vectorSearch(
       : undefined;
 
   // -----------------------------
-  // 1. Semantic similarity search
+  // 1. Global semantic similarity search
   // -----------------------------
-// -----------------------------
-// 1. Balanced semantic search (per document)
-// -----------------------------
-
-let semanticResults: any[] = [];
-
-// Case A: ALL DOCUMENTS MODE (multiple doc_ids)
-if (filters?.doc_id && Array.isArray(filters.doc_id)) {
-  const perDocK = Math.max(1, Math.floor(topK / filters.doc_id.length));
-
-  for (const docId of filters.doc_id) {
-    const results = await qdrant.search(COLLECTION_NAME, {
-      vector: embedding,
-      limit: perDocK,
-      with_payload: true,
-      with_vector: false,
-      filter: {
-        must: [
-          {
-            key: "doc_id",
-            match: { value: docId },
-          },
-        ],
-      },
-    });
-
-    semanticResults.push(...results);
-  }
-}
-// Case B: SINGLE DOCUMENT MODE
-else {
-  semanticResults = await qdrant.search(COLLECTION_NAME, {
+  const semanticResults = await qdrant.search(COLLECTION_NAME, {
     vector: embedding,
     limit: topK,
     with_payload: true,
     with_vector: false,
     ...(baseFilter && { filter: baseFilter }),
   });
-}
 
-// -----------------------------
-// 2. Header chunk retrieval (ONE per document)
-// -----------------------------
-let headerPoints: any[] = [];
 
-if (filters?.doc_id && Array.isArray(filters.doc_id)) {
-  // All Documents mode → one header per document
-  for (const docId of filters.doc_id) {
-    const res = await qdrant.scroll(COLLECTION_NAME, {
-      limit: 1,
-      with_payload: true,
-      with_vector: false,
-      filter: {
-        must: [
-          { key: "doc_id", match: { value: docId } },
-          { key: "chunk_index", match: { value: 0 } },
-        ],
-      },
-    });
+  // -----------------------------
+  // 2. Header chunk retrieval
+  // -----------------------------
+  const headerFilter = {
+    must: [
+      ...(mustConditions ?? []),
+      { key: "chunk_index", match: { value: 0 } },
+    ],
+  };
 
-    if (res.points && res.points.length > 0) {
-      headerPoints.push(res.points[0]);
-    }
-  }
-} else {
-  // Single document mode
-  const res = await qdrant.scroll(COLLECTION_NAME, {
-    limit: 1,
+  const headerRes = await qdrant.scroll(COLLECTION_NAME, {
+    limit: 100, // Get headers for all matching documents
     with_payload: true,
     with_vector: false,
-    filter: {
-      must: [
-        ...(mustConditions ?? []),
-        { key: "chunk_index", match: { value: 0 } },
-      ],
-    },
+    filter: headerFilter,
   });
 
-  if (res.points && res.points.length > 0) {
-    headerPoints.push(res.points[0]);
-  }
-}
+  const headerPoints = headerRes.points || [];
 
-// -----------------------------
-// 3. Merge + deduplicate
-// -----------------------------
-const combined = [
-  ...semanticResults,
-  ...headerPoints,
-];
+
+  // -----------------------------
+  // 3. Merge + deduplicate
+  // -----------------------------
+  const combined = [
+    ...semanticResults,
+    ...headerPoints,
+  ];
 
 
   const uniqueMap = new Map<string, any>();
@@ -205,14 +140,14 @@ const combined = [
   }
 
   const mergedResults = Array.from(uniqueMap.values());
-console.log(
-  "RAG CONTEXT DOC COUNTS:",
-  mergedResults.reduce((acc: any, p: any) => {
-    const d = p.payload?.doc_id ?? "unknown";
-    acc[d] = (acc[d] || 0) + 1;
-    return acc;
-  }, {})
-);
+  console.log(
+    "RAG CONTEXT DOC COUNTS:",
+    mergedResults.reduce((acc: any, p: any) => {
+      const d = p.payload?.doc_id ?? "unknown";
+      acc[d] = (acc[d] || 0) + 1;
+      return acc;
+    }, {})
+  );
 
   // -----------------------------
   // 4. Score threshold filtering
@@ -221,8 +156,8 @@ console.log(
     scoreThreshold <= 0
       ? mergedResults
       : mergedResults.filter(
-          (point) => (point.score ?? 1) >= scoreThreshold
-        );
+        (point) => (point.score ?? 1) >= scoreThreshold
+      );
 
   return filteredResults.map((point) => ({
     id: point.id,

@@ -29,7 +29,7 @@ class QdrantWriter:
             self.client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(
-                    size=1536,
+                    size=384,  # all-MiniLM-L6-v2 embedding dimension
                     distance=Distance.COSINE,
                 ),
             )

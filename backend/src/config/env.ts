@@ -32,6 +32,7 @@ export const ENV = {
   // ----------------------------
   QDRANT_URL: getEnv("QDRANT_URL", "http://localhost:6333"),
   QDRANT_COLLECTION: getEnv("QDRANT_COLLECTION", "documents"),
+  VECTOR_SIZE: parseInt(getEnv("VECTOR_SIZE", "384"), 10),
 
   // ----------------------------
   // Retrieval
@@ -54,11 +55,22 @@ export const ENV = {
   ),
 
   // ----------------------------
+  // CORS
+  // ----------------------------
+  CORS_ORIGIN: getEnv("CORS_ORIGIN", "http://localhost:3000"),
+
+
+  // ----------------------------
   // File-aware RAG (Day 20)
   // ----------------------------
   // Holds the most recently uploaded document ID
   // Used when scope === "current_file"
   LAST_UPLOADED_DOC_ID: process.env.LAST_UPLOADED_DOC_ID || "",
+
+  // ----------------------------
+  // Logging
+  // ----------------------------
+  LOG_LEVEL: getEnv("LOG_LEVEL", "info"),
 
   // ----------------------------
   // Debug

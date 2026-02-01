@@ -66,7 +66,7 @@ embedder = LocalEmbedder()
 # Pipeline
 # -----------------------------
 text_parser = TextParser()
-chunker = FixedChunker(chunk_size=200, overlap=50)
+chunker = FixedChunker(chunk_size=1000, overlap=200)
 writer = QdrantWriter()
 
 # Load document
